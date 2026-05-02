@@ -37,7 +37,30 @@ export PYTHONPATH="$(pwd)"
 
 # Manifest traceability: publish repo URL + commit that match THIS checkout (competition verification).
 # Override with POKER44_MODEL_REPO_URL / POKER44_MODEL_REPO_COMMIT if needed.
-# Custom miners: ensure `git remote origin` is your public fork, not only the upstream Poker44 URL.
+# Custom miners: point `origin` at your public fork (or set POKER44_MODEL_REPO_URL). If `origin`
+# is unset, same normalization is applied to the `danyloooah` remote when present.
+_poker44_export_repo_url_from_remote() {
+  local raw="$1"
+  [[ -z "$raw" ]] && return 1
+  case "$raw" in
+    git@github.com:*)
+      suf="${raw#git@github.com:}"
+      export POKER44_MODEL_REPO_URL="https://github.com/${suf%.git}"
+      ;;
+    git@gitlab.com:*)
+      suf="${raw#git@gitlab.com:}"
+      export POKER44_MODEL_REPO_URL="https://gitlab.com/${suf%.git}"
+      ;;
+    *)
+      export POKER44_MODEL_REPO_URL="${raw%.git}"
+      ;;
+  esac
+  # Trim trailing slash for stable manifest / policy checks
+  POKER44_MODEL_REPO_URL="${POKER44_MODEL_REPO_URL%/}"
+  export POKER44_MODEL_REPO_URL
+  return 0
+}
+
 if [[ -z "${POKER44_MODEL_REPO_COMMIT:-}" ]] && [[ -d "$REPO_ROOT/.git" ]]; then
   if FULL_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)"; then
     export POKER44_MODEL_REPO_COMMIT="$FULL_SHA"
@@ -46,24 +69,29 @@ fi
 if [[ -z "${POKER44_MODEL_REPO_URL:-}" ]] && [[ -d "$REPO_ROOT/.git" ]]; then
   ORIGIN="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
   if [[ -n "$ORIGIN" ]]; then
-    case "$ORIGIN" in
-      git@github.com:*)
-        suf="${ORIGIN#git@github.com:}"
-        export POKER44_MODEL_REPO_URL="https://github.com/${suf%.git}"
-        ;;
-      git@gitlab.com:*)
-        suf="${ORIGIN#git@gitlab.com:}"
-        export POKER44_MODEL_REPO_URL="https://gitlab.com/${suf%.git}"
-        ;;
-      *)
-        export POKER44_MODEL_REPO_URL="${ORIGIN%.git}"
-        ;;
-    esac
+    _poker44_export_repo_url_from_remote "$ORIGIN" || true
+  fi
+  if [[ -z "${POKER44_MODEL_REPO_URL:-}" ]]; then
+    DANY="$(git -C "$REPO_ROOT" remote get-url danyloooah 2>/dev/null || true)"
+    [[ -n "$DANY" ]] && _poker44_export_repo_url_from_remote "$DANY" || true
   fi
 fi
 
 # Default trained chunk model (override if needed)
 export POKER44_CHUNK_MODEL_PATH="${POKER44_CHUNK_MODEL_PATH:-$REPO_ROOT/scripts/miner/training/artifacts/chunk_model.joblib}"
+
+# Custom ML + upstream repo_url breaks transparent policy (repo_url_must_point_to_model_repo).
+if [[ -n "${POKER44_MODEL_REPO_URL:-}" ]] && [[ -f "$POKER44_CHUNK_MODEL_PATH" ]]; then
+  if ! head -1 "$POKER44_CHUNK_MODEL_PATH" | grep -q "git-lfs.github.com/spec" 2>/dev/null; then
+    case "$POKER44_MODEL_REPO_URL" in
+      *github.com/Poker44/Poker44-subnet*)
+        echo "Warning: Manifest repo_url points at upstream Poker44 while a real (non-LFS-pointer) chunk model is present." >&2
+        echo "  Custom ML miners need POKER44_MODEL_REPO_URL / origin (or danyloooah) = your public fork, e.g. https://github.com/<you>/Poker" >&2
+        ;;
+    esac
+  fi
+fi
+
 # Optional inference tuning (see neurons/miner.py docstring):
 # export POKER44_RISK_TEMPERATURE=1.15   # >1 softens risk_scores toward 0.5 (logit temperature)
 # export POKER44_BOT_THRESHOLD=0.55      # threshold for synapse.predictions only (validators score risk_scores)

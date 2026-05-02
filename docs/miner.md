@@ -208,8 +208,8 @@ scoring path.
 must match the code actually serving the axon (see subnet operator communications). Set
 `POKER44_MODEL_REPO_URL` and **`POKER44_MODEL_REPO_COMMIT`** (full SHA) to that public tree.
 `scripts/miner/run/run_miner.sh` exports both from `git remote get-url origin` and
-`git rev-parse HEAD` when unset (and a `.git` directory exists). Point `origin` at **your public
-fork** for a custom ML miner; declaring the upstream Poker44 URL together with a non-reference
+`git rev-parse HEAD` when unset (and a `.git` directory exists); if **`origin`** has no URL, it tries
+the **`danyloooah`** remote next. Point `origin` at **your public fork** for a predictable setup; declaring the upstream Poker44 URL together with a non-reference
 `model_name` fails the transparent policy check in `evaluate_manifest_compliance`.
 
 The reference miner’s manifest includes **`implementation_sha256`** over `neurons/miner.py` plus
@@ -227,20 +227,20 @@ Recommended fields:
 - `license`
 - `training_data_statement`
 - `training_data_sources`
-- `data_attestation`
+- `private_data_attestation`
 - `artifact_url`
 - `artifact_sha256`
 - `implementation_sha256`
 
-Minimum fields for `transparent` compliance:
+Minimum fields for `transparent` compliance (see `evaluate_manifest_compliance` in
+`poker44/utils/model_manifest.py`):
 
 - `open_source=true`
-- `repo_url`
-- `repo_commit`
-- `model_name`
-- `model_version`
-- `training_data_statement`
-- `data_attestation`
+- non-empty `repo_url` consistent with `model_name` (custom models cannot declare only the upstream Poker44 subtree URL unless `model_name` is the reference heuristic)
+- valid git `repo_commit`
+- `model_name`, `model_version`
+- `training_data_statement`, `private_data_attestation`
+- `implementation_files`, `implementation_sha256`
 
 The validator still scores your `risk_scores`; the manifest is for transparency and
 anti-leakage tracking.
