@@ -158,3 +158,33 @@ python scripts/miner/training/train_model.py --no-real-jsonl --no-disk-synthetic
 ```
 
 Writes `scripts/miner/training/artifacts/chunk_model.joblib` (gitignored). Override path: `POKER44_CHUNK_MODEL_PATH`.
+
+---
+
+## Long CPU run (VPS / overnight)
+
+Use **`run_extended_train.sh`** when you want a heavier fit (large `--samples`, calibration, human boost). It logs under `scripts/miner/training/artifacts/train_extended_*.log`.
+
+Default scale is **`EXTENDED_TRAIN_SAMPLES=250000`** (override via env). Wall-clock is CPU-dependent (often **hours**).
+
+Foreground:
+
+```bash
+./scripts/miner/training/run_extended_train.sh
+```
+
+Background with **`nohup`**:
+
+```bash
+cd /path/to/Poker44-subnet
+nohup ./scripts/miner/training/run_extended_train.sh >>scripts/miner/training/artifacts/nohup_extended_train.log 2>&1 &
+tail -f scripts/miner/training/artifacts/nohup_extended_train.log
+```
+
+Larger sweep:
+
+```bash
+EXTENDED_TRAIN_SAMPLES=400000 EXTENDED_TRAIN_SEED=99 ./scripts/miner/training/run_extended_train.sh
+```
+
+Extra flags are forwarded to `train_model.py` (e.g. `--disk-weight 2`).

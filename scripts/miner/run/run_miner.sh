@@ -34,6 +34,34 @@ fi
 pm2 delete "$PM2_NAME" 2>/dev/null || true
 
 export PYTHONPATH="$(pwd)"
+
+# Manifest traceability: publish repo URL + commit that match THIS checkout (competition verification).
+# Override with POKER44_MODEL_REPO_URL / POKER44_MODEL_REPO_COMMIT if needed.
+# Custom miners: ensure `git remote origin` is your public fork, not only the upstream Poker44 URL.
+if [[ -z "${POKER44_MODEL_REPO_COMMIT:-}" ]] && [[ -d "$REPO_ROOT/.git" ]]; then
+  if FULL_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)"; then
+    export POKER44_MODEL_REPO_COMMIT="$FULL_SHA"
+  fi
+fi
+if [[ -z "${POKER44_MODEL_REPO_URL:-}" ]] && [[ -d "$REPO_ROOT/.git" ]]; then
+  ORIGIN="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
+  if [[ -n "$ORIGIN" ]]; then
+    case "$ORIGIN" in
+      git@github.com:*)
+        suf="${ORIGIN#git@github.com:}"
+        export POKER44_MODEL_REPO_URL="https://github.com/${suf%.git}"
+        ;;
+      git@gitlab.com:*)
+        suf="${ORIGIN#git@gitlab.com:}"
+        export POKER44_MODEL_REPO_URL="https://gitlab.com/${suf%.git}"
+        ;;
+      *)
+        export POKER44_MODEL_REPO_URL="${ORIGIN%.git}"
+        ;;
+    esac
+  fi
+fi
+
 # Default trained chunk model (override if needed)
 export POKER44_CHUNK_MODEL_PATH="${POKER44_CHUNK_MODEL_PATH:-$REPO_ROOT/scripts/miner/training/artifacts/chunk_model.joblib}"
 # Optional inference tuning (see neurons/miner.py docstring):
@@ -68,6 +96,8 @@ pm2 save
 echo "Miner started: $PM2_NAME"
 echo "Python: $PYTHON_BIN"
 echo "Model: $POKER44_CHUNK_MODEL_PATH"
+echo "Manifest repo_url (if set): ${POKER44_MODEL_REPO_URL:-}"
+echo "Manifest repo_commit (if set): ${POKER44_MODEL_REPO_COMMIT:-}"
 echo "View logs: pm2 logs $PM2_NAME"
 echo "Config: netuid=$NETUID network=$NETWORK wallet=$WALLET_NAME hotkey=$HOTKEY axon_port=$AXON_PORT"
 if [ -n "$ALLOWED_VALIDATOR_HOTKEYS" ]; then

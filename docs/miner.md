@@ -204,6 +204,18 @@ Operationally:
 Poker44 miners can publish a lightweight `model_manifest` without changing the remote-inference
 scoring path.
 
+**Competition traceability:** for top daily miners, declared **public repository** and **commit**
+must match the code actually serving the axon (see subnet operator communications). Set
+`POKER44_MODEL_REPO_URL` and **`POKER44_MODEL_REPO_COMMIT`** (full SHA) to that public tree.
+`scripts/miner/run/run_miner.sh` exports both from `git remote get-url origin` and
+`git rev-parse HEAD` when unset (and a `.git` directory exists). Point `origin` at **your public
+fork** for a custom ML miner; declaring the upstream Poker44 URL together with a non-reference
+`model_name` fails the transparent policy check in `evaluate_manifest_compliance`.
+
+The reference miner’s manifest includes **`implementation_sha256`** over `neurons/miner.py` plus
+`poker44/training/features.py`, `calibration.py`, and `risk_postprocess.py` when present, so
+auditors can verify the inference stack you ship.
+
 Recommended fields:
 
 - `open_source`

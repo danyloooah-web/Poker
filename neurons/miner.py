@@ -53,6 +53,25 @@ class Miner(BaseMinerNeuron):
         except ValueError:
             return default
 
+    @staticmethod
+    def _manifest_implementation_files(repo_root: Path) -> list[Path]:
+        """
+        Paths hashed into ``implementation_sha256`` for competition traceability.
+
+        Covers inference: miner entrypoint plus feature extraction, calibration hook, score post-processing.
+        """
+        here = Path(__file__).resolve()
+        extras = (
+            repo_root / "poker44" / "training" / "features.py",
+            repo_root / "poker44" / "training" / "calibration.py",
+            repo_root / "poker44" / "training" / "risk_postprocess.py",
+        )
+        out = [here]
+        for p in extras:
+            if p.is_file():
+                out.append(p.resolve())
+        return out
+
     def __init__(self, config=None):
         super(Miner, self).__init__(config=config)
         repo_root = Path(__file__).resolve().parents[1]
@@ -108,6 +127,10 @@ class Miner(BaseMinerNeuron):
             "model_name": "poker44-chunk-voting-ensemble",
             "model_version": "3",
             "framework": "scikit-learn VotingClassifier (RF+HGBM), optional Platt calibration",
+            # Do not inherit the reference subnet URL/name pairing; declare your public fork via env
+            # (``POKER44_MODEL_REPO_URL`` / ``POKER44_MODEL_REPO_COMMIT`` or ``run_miner.sh`` git defaults).
+            "repo_url": "",
+            "repo_commit": "",
             "notes": (
                 "Trained via scripts/miner/training/train_model.py: synthetic + disk JSONL + "
                 "optional hands_generator/training_prepared.jsonl; --calibrate adds "
@@ -132,9 +155,10 @@ class Miner(BaseMinerNeuron):
             "🤖 Poker44 Miner started | mode="
             + ("trained_ensemble" if self._ml_bundle else "heuristic_fallback")
         )
+        impl_files = Miner._manifest_implementation_files(repo_root)
         self.model_manifest = build_local_model_manifest(
             repo_root=repo_root,
-            implementation_files=[Path(__file__).resolve()],
+            implementation_files=impl_files,
             defaults=defaults,
         )
         self.manifest_compliance = evaluate_manifest_compliance(self.model_manifest)
