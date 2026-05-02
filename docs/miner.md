@@ -101,6 +101,11 @@ Rules:
 - each score should be in `[0, 1]`;
 - `predictions` should align one-to-one with `risk_scores` when provided.
 
+Optional environment variables (reference miner):
+
+- `POKER44_RISK_TEMPERATURE` — default `1.0`. Applies logit temperature to raw ensemble probabilities before returning `risk_scores`. Values greater than `1.0` pull scores toward `0.5`, which can reduce false positives on human-labeled chunks if your model is over-confident (validators grade `risk_scores`, not `predictions`).
+- `POKER44_BOT_THRESHOLD` — default `0.5`. Threshold on each returned `risk_score` when building `predictions` (`risk_score >= threshold` ⇒ bot). Validators still consume continuous `risk_scores` for scoring.
+
 The reference miner treats each chunk as one scoring unit and returns:
 
 - low score for human-like behavior

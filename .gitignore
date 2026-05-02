@@ -24,6 +24,8 @@ flightplans/*
 model/*
 
 models/*
+scripts/miner/training/artifacts/
+hands_generator/human_hands/synthetic_prepared.jsonl
 runs/*
 # C extensions
 *.so
@@ -145,15 +147,17 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-# Environments
-.env
-.venv
-.venv312/
-env/
+# Python virtual environments (never commit)
+.venv/
 venv/
 ENV/
-env.bak/
-venv.bak/
+
+# Bittensor wallets live in ~/.bittensor — never commit copies inside the repo
+15/
+wallets/
+**/coldkeyfile*
+**/hotkeyfile*
+
 
 # Spyder project settings
 .spyderproject

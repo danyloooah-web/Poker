@@ -1,15 +1,17 @@
-"""Reference Poker44 miner with simple chunk-level behavioral heuristics."""
+"""Poker44 miner: trained ensemble (RF + HGBM) on sanitized chunk features, with heuristic fallback."""
 
-# from __future__ import annotations
 
-import time
+import os
 from collections import Counter
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Optional, Tuple
 
 import bittensor as bt
 
 from poker44.base.miner import BaseMinerNeuron
+from poker44.training import calibration as poker44_calibration  # noqa: F401 -- joblib pickle types
+from poker44.training.features import FEATURE_VERSION, featurize_chunk
+from poker44.training.risk_postprocess import temperature_scale_probability
 from poker44.utils.model_manifest import (
     build_local_model_manifest,
     evaluate_manifest_compliance,
@@ -17,53 +19,128 @@ from poker44.utils.model_manifest import (
 )
 from poker44.validator.synapse import DetectionSynapse
 
+try:
+    import joblib
+except ImportError:  # pragma: no cover
+    joblib = None  # type: ignore[assignment]
+
 
 class Miner(BaseMinerNeuron):
     """
-    Reference heuristic miner.
+    Chunk-level bot-risk miner.
 
-    It aggregates simple behavior signals over each chunk and returns a bot-risk
-    score per chunk. The goal is not SOTA accuracy, but a deterministic and
-    explainable baseline that is meaningfully better than random.
+    Loads ``scripts/miner/training/artifacts/chunk_model.joblib`` (or ``POKER44_CHUNK_MODEL_PATH``)
+    when ``feature_version`` matches ``poker44.training.features.FEATURE_VERSION``.
+    The bundle ``classifier`` is usually a sklearn ``VotingClassifier`` (RF + HGBM), optionally
+    wrapped as ``poker44.training.calibration.PlattCalibratedClassifier`` when trained with
+    ``train_model.py --calibrate``.
+
+    Inference tuning (optional env):
+
+    - ``POKER44_RISK_TEMPERATURE`` — logit temperature on raw P(bot); ``1.0`` disables.
+      Values ``>1`` soften scores toward ``0.5`` (often lowers human FPR on eval).
+    - ``POKER44_BOT_THRESHOLD`` — threshold on ``risk_scores`` for ``synapse.predictions``
+      only (validator scoring uses ``risk_scores``; default ``0.5``).
     """
+
+    @staticmethod
+    def _env_float(name: str, default: float) -> float:
+        raw = os.getenv(name)
+        if raw is None or raw == "":
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            return default
 
     def __init__(self, config=None):
         super(Miner, self).__init__(config=config)
-        bt.logging.info("🤖 Heuristic Poker44 Miner started")
         repo_root = Path(__file__).resolve().parents[1]
+        self._ml_bundle: Optional[dict[str, Any]] = None
+        self._risk_temperature = Miner._env_float("POKER44_RISK_TEMPERATURE", 1.0)
+        self._bot_threshold = Miner._env_float("POKER44_BOT_THRESHOLD", 0.5)
+        self._bot_threshold = max(1e-6, min(1.0 - 1e-6, self._bot_threshold))
+
+        default_manifest_path = (
+            repo_root / "scripts" / "miner" / "training" / "artifacts" / "chunk_model.joblib"
+        )
+        model_path = Path(os.getenv("POKER44_CHUNK_MODEL_PATH", str(default_manifest_path)))
+        if joblib is not None and model_path.is_file():
+            try:
+                bundle = joblib.load(model_path)
+                if bundle.get("feature_version") == FEATURE_VERSION:
+                    self._ml_bundle = bundle
+                    bt.logging.info(
+                        f"Loaded chunk classifier | path={model_path} "
+                        f"feature_version={FEATURE_VERSION} "
+                        f"train_samples={bundle.get('train_samples')} "
+                        f"calibrated={bundle.get('calibrated', False)} "
+                        f"classifier={type(bundle['classifier']).__name__} "
+                        f"risk_temperature={self._risk_temperature} "
+                        f"bot_threshold={self._bot_threshold}"
+                    )
+                else:
+                    bt.logging.warning(
+                        "Chunk model feature_version mismatch; using heuristic. "
+                        f"bundle={bundle.get('feature_version')} code={FEATURE_VERSION}"
+                    )
+            except Exception as exc:  # pragma: no cover
+                bt.logging.warning(f"Could not load chunk model from {model_path}: {exc}")
+
+        heuristic_defaults = {
+            "model_name": "poker44-reference-heuristic",
+            "model_version": "1",
+            "framework": "python-heuristic",
+            "license": "MIT",
+            "repo_url": "https://github.com/Poker44/Poker44-subnet",
+            "notes": "Reference heuristic miner shipped with the Poker44 subnet.",
+            "open_source": True,
+            "inference_mode": "remote",
+            "training_data_statement": (
+                "Reference heuristic miner. No training step. Uses only runtime chunk features."
+            ),
+            "training_data_sources": ["none"],
+            "private_data_attestation": (
+                "This reference miner does not train on validator-only evaluation data."
+            ),
+        }
+        ml_defaults = {
+            "model_name": "poker44-chunk-voting-ensemble",
+            "model_version": "3",
+            "framework": "scikit-learn VotingClassifier (RF+HGBM), optional Platt calibration",
+            "notes": (
+                "Trained via scripts/miner/training/train_model.py: synthetic + disk JSONL + "
+                "optional hands_generator/training_prepared.jsonl; --calibrate adds "
+                "poker44.training.calibration.PlattCalibratedClassifier."
+            ),
+            "training_data_statement": (
+                "Synthetic behavioral regimes plus optional sanitized JSONL from hands_generator; "
+                "human vs bot labels from simulator / exports."
+            ),
+            "training_data_sources": [
+                "synthetic_poker44_training",
+                "synthetic_prepared.jsonl",
+                "optional_training_prepared.jsonl",
+            ],
+            "private_data_attestation": (
+                "Does not use validator evaluation payloads for training."
+            ),
+        }
+        defaults = {**heuristic_defaults, **(ml_defaults if self._ml_bundle else {})}
+
+        bt.logging.info(
+            "🤖 Poker44 Miner started | mode="
+            + ("trained_ensemble" if self._ml_bundle else "heuristic_fallback")
+        )
         self.model_manifest = build_local_model_manifest(
             repo_root=repo_root,
             implementation_files=[Path(__file__).resolve()],
-            defaults={
-                "model_name": "poker44-reference-heuristic",
-                "model_version": "1",
-                "framework": "python-heuristic",
-                "license": "MIT",
-                "repo_url": "https://github.com/Poker44/Poker44-subnet",
-                "notes": "Reference heuristic miner shipped with the Poker44 subnet.",
-                "open_source": True,
-                "inference_mode": "remote",
-                "training_data_statement": (
-                    "Reference heuristic miner. No training step. Uses only runtime chunk features."
-                ),
-                "training_data_sources": ["none"],
-                "private_data_attestation": (
-                    "This reference miner does not train on validator-only evaluation data."
-                ),
-            },
+            defaults=defaults,
         )
         self.manifest_compliance = evaluate_manifest_compliance(self.model_manifest)
         self.manifest_digest = manifest_digest(self.model_manifest)
         self._log_manifest_startup(repo_root)
-        
-        # # Attach handlers after initialization
-        # self.axon.attach(
-        #     forward_fn = self.forward,
-        #     blacklist_fn = self.blacklist,
-        #     priority_fn = self.priority,
-        # )
-        # bt.logging.info("Attaching forward function to miner axon.")
-        
+
         bt.logging.info(f"Axon created: {self.axon}")
 
     def _log_manifest_startup(self, repo_root: Path) -> None:
@@ -90,14 +167,26 @@ class Miner(BaseMinerNeuron):
         )
 
     async def forward(self, synapse: DetectionSynapse) -> DetectionSynapse:
-        """Assign one deterministic bot-risk score per chunk."""
+        """
+        One bot-risk score per chunk in ``[0, 1]``.
+
+        When a bundle is loaded (``self._ml_bundle``), uses ``bundle['classifier'].predict_proba``
+        on ``featurize_chunk`` vectors — raw ensemble or Platt-calibrated artifact from training.
+        Otherwise uses the reference heuristic.
+        """
         chunks = synapse.chunks or []
-        scores = [self.score_chunk(chunk) for chunk in chunks]
+        if self._ml_bundle is not None:
+            scores = [self._trained_ensemble_risk(c) for c in chunks]
+            mode = "trained_ensemble"
+        else:
+            scores = [self._heuristic_chunk_risk(c) for c in chunks]
+            mode = "heuristic"
         synapse.risk_scores = scores
-        synapse.predictions = [s >= 0.5 for s in scores]
+        thr = self._bot_threshold
+        synapse.predictions = [bool(float(s) >= thr) for s in scores]
         synapse.model_manifest = dict(self.model_manifest)
-        bt.logging.info(f"Miner Predctions: {synapse.predictions}")
-        bt.logging.info(f"Scored {len(chunks)} chunks with heuristic risks.")
+        bt.logging.info(f"Miner Predictions ({mode}): {synapse.predictions}")
+        bt.logging.info(f"Scored {len(chunks)} chunks ({mode}).")
         return synapse
 
     @staticmethod
@@ -142,15 +231,35 @@ class Miner(BaseMinerNeuron):
 
         return cls._clamp01(score)
 
-    @classmethod
-    def score_chunk(cls, chunk: list[dict]) -> float:
+    def _chunk_classifier(self) -> Any:
+        """Sklearn estimator from the joblib bundle (``VotingClassifier`` or ``PlattCalibratedClassifier``)."""
+        assert self._ml_bundle is not None
+        return self._ml_bundle["classifier"]
+
+    def _trained_ensemble_risk(self, chunk: list[dict]) -> float:
+        """Joblib bundle → feature vector → P(bot) (including Platt calibration if saved)."""
         if not chunk:
             return 0.5
+        assert self._ml_bundle is not None
+        x = featurize_chunk(chunk)
+        clf = self._chunk_classifier()
+        raw = float(clf.predict_proba(x.reshape(1, -1))[0, 1])
+        adjusted = temperature_scale_probability(raw, self._risk_temperature)
+        return round(self._clamp01(adjusted), 6)
 
-        hand_scores = [cls._score_hand(hand) for hand in chunk]
+    def _heuristic_chunk_risk(self, chunk: list[dict]) -> float:
+        """Reference per-hand heuristic, averaged over the chunk."""
+        if not chunk:
+            return 0.5
+        hand_scores = [self._score_hand(hand) for hand in chunk]
         avg_score = sum(hand_scores) / len(hand_scores)
+        return round(self._clamp01(avg_score), 6)
 
-        return round(cls._clamp01(avg_score), 6)
+    def score_chunk(self, chunk: list[dict]) -> float:
+        """Same routing as ``forward``: ensemble if loaded, else heuristic (for tests/tools)."""
+        if self._ml_bundle is not None:
+            return self._trained_ensemble_risk(chunk)
+        return self._heuristic_chunk_risk(chunk)
 
     async def blacklist(self, synapse: DetectionSynapse) -> Tuple[bool, str]:
         """Determine whether to blacklist incoming requests."""
@@ -162,8 +271,5 @@ class Miner(BaseMinerNeuron):
 
 
 if __name__ == "__main__":
-    with Miner() as miner:
-        bt.logging.info("Random miner running...")
-        while True:
-            bt.logging.info(f"Miner UID: {miner.uid} | Incentive: {miner.metagraph.I[miner.uid]}")
-            time.sleep(5 * 60)
+    miner = Miner()
+    miner.run()
